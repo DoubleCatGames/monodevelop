@@ -39,6 +39,7 @@ using MonoDevelop.Ide;
 using MonoDevelop.Ide.Gui.Components;
 using MonoDevelop.Ide.Tasks;
 using MonoDevelop.Components.Mac;
+using System.Threading;
 
 namespace MonoDevelop.MacIntegration.MainToolbar
 {
@@ -360,6 +361,7 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 		AnimatedIcon iconAnimation;
 		IDisposable xwtAnimation;
 		readonly BuildResultsView buildResults;
+		readonly NSButton cancelButton;
 
 		NSAttributedString GetStatusString (string text, NSColor color)
 		{
@@ -423,6 +425,16 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			buildResults = new BuildResultsView ();
 			buildResults.Hidden = true;
 
+			cancelButton = new NSButton () {
+				Image = ImageService.GetIcon (Stock.Stop, Gtk.IconSize.Menu).ToNSImage (),
+				Hidden = true,
+				Bordered = false,
+				ImagePosition = NSCellImagePosition.ImageOnly,
+			};
+			cancelButton.Activated += (o, e) => {
+				cts?.Cancel ();
+			};
+
 			ctxHandler = new StatusBarContextHandler (this);
 
 			updateHandler = delegate {
@@ -452,6 +464,7 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			TaskService.Errors.TasksRemoved += updateHandler;
 			BrandingService.ApplicationNameChanged += ApplicationNameChanged;
 
+			AddSubview (cancelButton);
 			AddSubview (buildResults);
 			AddSubview (imageView);
 			AddSubview (textField);
@@ -499,22 +512,28 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			base.Dispose (disposing);
 		}
 
+		static void DrawSeparator (nfloat x, CGRect dirtyRect)
+		{
+			var sepRect = new CGRect (x - 6.5, MacSystemInformation.OsVersion >= MacSystemInformation.ElCapitan ? 4 : 3, 1, 16);
+			if (sepRect.IntersectsWith (dirtyRect)) {
+				NSColor.LightGray.SetFill ();
+				NSBezierPath.FillRect (sepRect);
+			}
+		}
+
 		public override void DrawRect (CGRect dirtyRect)
 		{
 			base.DrawRect (dirtyRect);
 
-			if (statusIcons.Count == 0 || buildResults.Hidden) {
-				return;
-			}
+			if (statusIcons.Count != 0 && !buildResults.Hidden)
+				DrawSeparator (LeftMostStatusItemX (), dirtyRect);
 
-			var x = LeftMostStatusItemX ();
-			var sepRect = new CGRect (x - 6.5, MacSystemInformation.OsVersion >= MacSystemInformation.ElCapitan ? 4 : 3, 1, 16);
-			if (!sepRect.IntersectsWith (dirtyRect)) {
-				return;
-			}
+			if (statusIcons.Count != 0 || !buildResults.Hidden) {
+				if (cancelButton.Hidden)
+					return;
 
-			NSColor.LightGray.SetFill ();
-			NSBezierPath.FillRect (sepRect);
+				DrawSeparator (LeftMostBuildResultX (), dirtyRect);
+			}
 		}
 
 		public override void ViewDidMoveToWindow ()
@@ -558,7 +577,15 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			return statusIcons.Last ().Frame.X;
 		}
 
-		nfloat DrawSeparatorIfNeeded (nfloat right)
+		nfloat LeftMostBuildResultX ()
+		{
+			if (buildResults.Hidden)
+				return LeftMostStatusItemX ();
+
+			return buildResults.Frame.X;
+		}
+
+		nfloat DrawSeparatorIfNeededBuildResults (nfloat right)
 		{
 			NeedsDisplay = true;
 
@@ -569,13 +596,33 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			return right - 12;
 		}
 
+		nfloat DrawSeparatorIfNeededCancelButton (nfloat right)
+		{
+			NeedsDisplay = true;
+
+			if (!buildResults.Hidden)
+				return buildResults.Frame.X - 12;
+
+			if (statusIcons.Count == 0)
+				return right;
+
+			return right - 12;
+		}
+
 		IconId buildImageId;
 
 		void PositionBuildResults (nfloat right)
 		{
-			right = DrawSeparatorIfNeeded (right);
+			right = DrawSeparatorIfNeededBuildResults (right);
 			right -= buildResults.Frame.Width;
 			buildResults.SetFrameOrigin (new CGPoint (right, buildResults.Frame.Y));
+		}
+
+		void PositionCancelButton (nfloat right)
+		{
+			right = DrawSeparatorIfNeededCancelButton (right);
+			right -= cancelButton.Frame.Width;
+			cancelButton.SetFrameOrigin (new CGPoint (right, cancelButton.Frame.Y));
 		}
 
 		internal void RepositionStatusIcons ()
@@ -588,13 +635,17 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			}
 
 			PositionBuildResults (right);
+			PositionCancelButton (right);
 
 			right -= 2;
 
-			if (!buildResults.Hidden) { // We have a build result layer.
-				textField.SetFrameSize (new CGSize (buildResults.Frame.X - 3 - textField.Frame.Left, Frame.Height));
-			} else
-				textField.SetFrameSize (new CGSize (right - 3 - textField.Frame.Left, Frame.Height));
+			if (!cancelButton.Hidden) { // We have a cancel button.
+				right = cancelButton.Frame.X;
+			} else if (!buildResults.Hidden) { // We have a build result layer.
+				right = buildResults.Frame.X;
+			}
+
+			textField.SetFrameSize (new CGSize (right - 3 - textField.Frame.Left, Frame.Height));
 		}
 
 		public StatusBarIcon ShowStatusIcon (Xwt.Drawing.Image pixbuf)
@@ -914,6 +965,18 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			}
 		}
 
+		CancellationTokenSource cts;
+		public void SetCancellationTokenSource (CancellationTokenSource source)
+		{
+			cts = source;
+
+			bool willHide = cts == null;
+			if (cancelButton.Hidden != willHide) {
+				cancelButton.Hidden = willHide;
+				RepositionStatusIcons ();
+			}
+		}
+
 		void RepositionContents ()
 		{
 			nfloat yOffset = 0f;
@@ -925,6 +988,7 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			textField.Frame = new CGRect (imageView.Frame.Right, yOffset, Frame.Width - 16, Frame.Height);
 
 			buildResults.Frame = new CGRect (buildResults.Frame.X, buildResults.Frame.Y, buildResults.Frame.Width, Frame.Height);
+			cancelButton.Frame = new CGRect (cancelButton.Frame.X, cancelButton.Frame.Y, 16, Frame.Height);
 			RepositionStatusIcons ();
 
 			progressView.Frame = new CGRect (0.5f, MacSystemInformation.OsVersion >= MacSystemInformation.ElCapitan ? 1f : 2f, Frame.Width - 2, Frame.Height - 2);
