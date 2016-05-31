@@ -1334,7 +1334,7 @@ namespace MonoDevelop.SourceEditor
 					return;
 				}
 				DocumentLine line = document.GetLine (bp.Line);
-				var status = bp.GetStatus (DebuggingService.DebuggerSession);
+				var status = DebuggingService.GetBreakpointStatus(bp);
 				bool tracepoint = (bp.HitAction & HitAction.Break) == HitAction.None;
 
 				if (line == null)

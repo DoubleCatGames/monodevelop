@@ -1011,8 +1011,6 @@ namespace MonoDevelop.Ide
 		
 		public AsyncOperation Execute (IBuildTarget entry, ExecutionContext context, bool buildBeforeExecuting = true)
 		{
-			if (currentRunOperation != null && !currentRunOperation.IsCompleted) return currentRunOperation;
-
 			var cs = new CancellationTokenSource ();
 			return new AsyncOperation (ExecuteAsync (entry, context, cs, buildBeforeExecuting), cs);
 		}
