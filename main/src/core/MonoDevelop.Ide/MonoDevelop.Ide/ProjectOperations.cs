@@ -1161,9 +1161,8 @@ namespace MonoDevelop.Ide
 			if (currentBuildOperation != null && !currentBuildOperation.IsCompleted) return currentBuildOperation;
 
 			var cs = new CancellationTokenSource ();
-			ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetRebuildProgressMonitor ().WithCancellationSource (cs);
 
-			var t = RebuildAsync (entry, monitor, operationContext);
+			var t = RebuildAsync (entry, cs, operationContext);
 			t = t.ContinueWith (ta => {
 				currentBuildOperationOwner = null;
 				return ta.Result;
@@ -1174,24 +1173,46 @@ namespace MonoDevelop.Ide
 			return currentBuildOperation = op;
 		}
 		
-		async Task<BuildResult> RebuildAsync (IBuildTarget entry, ProgressMonitor monitor, OperationContext operationContext)
+		async Task<BuildResult> RebuildAsync (IBuildTarget entry, CancellationTokenSource cs, OperationContext operationContext)
 		{
 			ITimeTracker tt = Counters.BuildItemTimer.BeginTiming ("Rebuilding " + entry.Name);
+			AggregatedProgressMonitor monClean = null;
+			AggregatedProgressMonitor monBuild = null;
 			try {
-				OnStartClean (monitor, tt);
+				Pad pad = IdeApp.Workbench.GetPad<Gui.Pads.ErrorListPad> ();
+				Gui.Pads.ErrorListPad errorPad = (Gui.Pads.ErrorListPad)pad.Content;
+				using (ProgressMonitor monError = errorPad.GetBuildProgressMonitor ()) {
+					using (var statusMon = IdeApp.Workbench.ProgressMonitors.GetStatusProgressMonitor (GettextCatalog.GetString ("Rebuilding... (Clean)"), Gui.Stock.StatusBuild, false, true, false, pad)) {
+						monClean = new AggregatedProgressMonitor (
+							monError,
+							statusMon
+						);
 
-				var res = await CleanAsync (entry, monitor, tt, true, operationContext);
-				if (res.HasErrors) {
-					tt.End ();
-					monitor.Dispose ();
-					return res;
+						OnStartClean (monClean, tt);
+
+						var res = await CleanAsync (entry, monClean, tt, true, operationContext);
+						if (res.HasErrors) {
+							tt.End ();
+							monClean.Dispose ();
+							return res;
+						}
+					}
+
+					using (var statusMon = IdeApp.Workbench.ProgressMonitors.GetStatusProgressMonitor (GettextCatalog.GetString ("Rebuilding... (Build)"), Gui.Stock.StatusBuild, false, true, false, pad)) {
+						monBuild = new AggregatedProgressMonitor (
+							monError,
+							statusMon
+						);
+						if (StartBuild != null) {
+							BeginBuild (monBuild, tt, true);
+						}
+						return await BuildSolutionItemAsync (entry, monBuild, tt, operationContext: operationContext);
+					}
 				}
-				if (StartBuild != null) {
-					BeginBuild (monitor, tt, true);
-				}
-				return await BuildSolutionItemAsync (entry, monitor, tt, operationContext:operationContext);
 			} finally {
 				tt.End ();
+				monClean?.Dispose ();
+				monBuild?.Dispose ();
 			}
 		}
 
